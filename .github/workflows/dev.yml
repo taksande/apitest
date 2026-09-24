@@ -1,19 +1,16 @@
-
 name: DEV Package Pipeline
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - develop
 
 permissions:
   contents: read
 
 jobs:
-  dev:
-    name: DEV Dry Run
+
+  package-operations:
     uses: ./.github/workflows/package-operations.yml
+
     with:
       environment: dev
       package_name: maximo-demo-package
