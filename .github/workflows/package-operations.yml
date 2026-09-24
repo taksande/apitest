@@ -1,220 +1,341 @@
-
 name: Reusable Package Operations
 
 on:
   workflow_call:
+
     inputs:
+
       environment:
-        description: Target environment
+        description: Target GitHub environment
         required: true
         type: string
+
       package_name:
-        description: Name of package
+        description: Package name
         required: true
         type: string
+
       dry_run:
-        description: Simulate deployment
+        description: Execute deployment as dry run
         required: true
         type: boolean
 
-    outputs:
-      package_id:
-        description: Generated package identifier
-        value: ${{ jobs.package.outputs.package_id }}
-
 jobs:
+
   package:
-    name: Package Lifecycle
+
+    name: Package Operations
+
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+
+    environment:
+      name: ${{ inputs.environment }}
 
     permissions:
       contents: read
 
-    outputs:
-      package_id: ${{ steps.create.outputs.package_id }}
-
     env:
-      API_URL: https://jsonplaceholder.typicode.com
+
+      # Environment variables configured in
+      # GitHub Settings -> Environments -> dev
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
+
+      CREATE_API: ${{ vars.CREATE_API }}
+      DISTRIBUTE_API: ${{ vars.DISTRIBUTE_API }}
+      DOWNLOAD_API: ${{ vars.DOWNLOAD_API }}
+      UPLOAD_API: ${{ vars.UPLOAD_API }}
+      DEPLOY_API: ${{ vars.DEPLOY_API }}
+      ADMIN_API: ${{ vars.ADMIN_API }}
+      CLEANUP_API: ${{ vars.CLEANUP_API }}
+
       PACKAGE_NAME: ${{ inputs.package_name }}
+
       DRY_RUN: ${{ inputs.dry_run }}
 
     steps:
-      - name: Validate inputs
+
+      # ------------------------------------------------
+      # 1. CHECK CONFIGURATION
+      # ------------------------------------------------
+
+      - name: Validate API configuration
         shell: bash
         run: |
+
           set -euo pipefail
 
-          if [[ ! "$PACKAGE_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-            echo "Invalid package name"
-            exit 1
-          fi
+          echo "Environment:"
+          echo "${{ inputs.environment }}"
 
-          # This example deliberately prevents real deployments.
-          if [[ "$DRY_RUN" != "true" ]]; then
-            echo "Only dry-run is supported by the mock API."
-            exit 1
-          fi
+          echo "API Base URL:"
+          echo "$API_BASE_URL"
 
-      # 1. CREATE PACKAGE
+          echo "Create API:"
+          echo "$CREATE_API"
+
+          echo "Distribute API:"
+          echo "$DISTRIBUTE_API"
+
+          echo "Download API:"
+          echo "$DOWNLOAD_API"
+
+          echo "Upload API:"
+          echo "$UPLOAD_API"
+
+          echo "Deploy API:"
+          echo "$DEPLOY_API"
+
+          echo "Admin API:"
+          echo "$ADMIN_API"
+
+          echo "Cleanup API:"
+          echo "$CLEANUP_API"
+
+      # ------------------------------------------------
+      # 2. CREATE PACKAGE
+      # ------------------------------------------------
+
       - name: Create package
         id: create
         shell: bash
         run: |
+
           set -euo pipefail
 
           mkdir -p package
 
-          jq -n \
-            --arg name "$PACKAGE_NAME" \
-            --arg env "${{ inputs.environment }}" \
-            --arg run "$GITHUB_RUN_ID" \
-            '{name:$name, environment:$env,
-              run_id:$run, version:"1.0.0"}' \
-            > package/manifest.json
+          cat > package/manifest.json <<EOF
+          {
+            "package": "$PACKAGE_NAME",
+            "environment": "${{ inputs.environment }}",
+            "run_id": "$GITHUB_RUN_ID"
+          }
+          EOF
 
-          curl --fail-with-body -sS \
+          echo "Calling:"
+          echo "$API_BASE_URL$CREATE_API"
+
+          curl \
+            --fail-with-body \
             --retry 3 \
-            -X POST "$API_URL/posts" \
+            -sS \
+            -X POST \
+            "$API_BASE_URL$CREATE_API" \
             -H "Content-Type: application/json" \
-            -d '{"title":"Create package",
-                 "body":"DEV dry run","userId":1}' \
-            > package/create-response.json
+            -d '{
+              "title": "Create package",
+              "body": "DEV dry run",
+              "userId": 1
+            }' \
+            -o package/create-response.json
 
-          jq -e '.id' package/create-response.json
+          cat package/create-response.json
 
           zip -r "${PACKAGE_NAME}.zip" package
 
-          echo "package_id=$GITHUB_RUN_ID" \
-            >> "$GITHUB_OUTPUT"
+          echo "package_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
 
-      # 2. DISTRIBUTE PACKAGE
-      - name: Validate distribution API
+      # ------------------------------------------------
+      # 3. DISTRIBUTE PACKAGE
+      # ------------------------------------------------
+
+      - name: Distribute package
         shell: bash
         run: |
+
           set -euo pipefail
 
-          curl --fail-with-body -sS \
+          echo "Calling:"
+          echo "$API_BASE_URL$DISTRIBUTE_API"
+
+          curl \
+            --fail-with-body \
             --retry 3 \
-            "$API_URL/posts/1" \
+            -sS \
+            "$API_BASE_URL$DISTRIBUTE_API" \
             -o distribution-response.json
 
-          jq -e '.id == 1' \
-            distribution-response.json
+          cat distribution-response.json
 
-      - name: Distribute package as artifact
+      - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.package_name }}-${{ github.run_id }}
           path: ${{ inputs.package_name }}.zip
-          if-no-files-found: error
           retention-days: 7
 
-      # 3. DOWNLOAD PACKAGE
-      - name: Remove local ZIP before download
-        shell: bash
-        run: |
-          rm -f "${PACKAGE_NAME}.zip"
+      # ------------------------------------------------
+      # 4. DOWNLOAD PACKAGE
+      # ------------------------------------------------
 
-      - name: Download distributed package
+      - name: Download package
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.package_name }}-${{ github.run_id }}
           path: downloaded
 
-      - name: Verify downloaded package
+      - name: Validate downloaded package
         shell: bash
         run: |
+
           set -euo pipefail
 
           unzip -t \
             "downloaded/${PACKAGE_NAME}.zip"
 
-          unzip -p \
-            "downloaded/${PACKAGE_NAME}.zip" \
-            package/manifest.json \
-            | jq -e \
-              --arg name "$PACKAGE_NAME" \
-              '.name == $name'
+          echo "Package download successful."
 
-      # 4. UPLOAD PACKAGE
-      - name: Upload package metadata to mock API
+      # ------------------------------------------------
+      # 5. UPLOAD PACKAGE
+      # ------------------------------------------------
+
+      - name: Upload package
         shell: bash
         run: |
+
           set -euo pipefail
 
-          jq -n \
-            --arg name "$PACKAGE_NAME" \
-            '{title:"Upload package",
-              body:$name,userId:1}' \
-            > upload-request.json
+          echo "Calling:"
+          echo "$API_BASE_URL$UPLOAD_API"
 
-          curl --fail-with-body -sS \
+          curl \
+            --fail-with-body \
             --retry 3 \
-            -X POST "$API_URL/posts" \
+            -sS \
+            -X POST \
+            "$API_BASE_URL$UPLOAD_API" \
             -H "Content-Type: application/json" \
-            --data-binary @upload-request.json \
+            -d '{
+              "title": "Upload package",
+              "body": "Package upload dry run",
+              "userId": 1
+            }' \
             -o upload-response.json
 
-          jq -e '.id' upload-response.json
+          cat upload-response.json
 
-          echo "Mock upload completed"
+      # ------------------------------------------------
+      # 6. ADMIN MODE
+      # ------------------------------------------------
 
-      # 5. ADMIN MODE
-      - name: Enable simulated admin mode
+      - name: Admin mode
         shell: bash
         run: |
-          echo "DRY RUN: Enable admin mode"
-          echo "No real server state changed"
 
-      # 6. DEPLOY PACKAGE
-      - name: Simulate deployment
-        shell: bash
-        run: |
           set -euo pipefail
 
-          curl --fail-with-body -sS \
-            --retry 3 \
-            -X PATCH "$API_URL/posts/1" \
-            -H "Content-Type: application/json" \
-            -d '{"title":"Package deployed - dry run"}' \
-            -o deploy-response.json
+          echo "Calling:"
+          echo "$API_BASE_URL$ADMIN_API"
 
-          jq -e '.id == 1' deploy-response.json
+          if [[ "$DRY_RUN" == "true" ]]; then
 
-          echo "Deployment simulation completed"
+            echo "DRY RUN:"
+            echo "Admin mode would be enabled."
 
-      # 7. CLEANUP PACKAGE
-      - name: Disable simulated admin mode
+          else
+
+            curl \
+              --fail-with-body \
+              --retry 3 \
+              -sS \
+              -X PATCH \
+              "$API_BASE_URL$ADMIN_API" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "title": "Admin mode enabled"
+              }'
+
+          fi
+
+      # ------------------------------------------------
+      # 7. DEPLOY PACKAGE
+      # ------------------------------------------------
+
+      - name: Deploy package
+        shell: bash
+        run: |
+
+          set -euo pipefail
+
+          echo "Calling:"
+          echo "$API_BASE_URL$DEPLOY_API"
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+
+            echo "======================================"
+            echo "DRY RUN DEPLOYMENT"
+            echo "======================================"
+
+            echo "Package:"
+            echo "$PACKAGE_NAME"
+
+            echo "Environment:"
+            echo "${{ inputs.environment }}"
+
+            echo "Deployment API:"
+            echo "$API_BASE_URL$DEPLOY_API"
+
+            echo "No actual deployment performed."
+
+          else
+
+            curl \
+              --fail-with-body \
+              --retry 3 \
+              -sS \
+              -X PATCH \
+              "$API_BASE_URL$DEPLOY_API" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "title": "Package deployed"
+              }'
+
+          fi
+
+      # ------------------------------------------------
+      # 8. CLEANUP
+      # ------------------------------------------------
+
+      - name: Cleanup
         if: always()
         shell: bash
         run: |
-          echo "DRY RUN: Disable admin mode"
 
-      - name: Cleanup mock API
-        if: always()
-        shell: bash
-        run: |
-          curl --fail-with-body -sS \
-            --retry 3 \
-            -X DELETE "$API_URL/posts/1" \
-            -o cleanup-response.json
+          echo "Calling:"
+          echo "$API_BASE_URL$CLEANUP_API"
 
-      - name: Cleanup temporary files
-        if: always()
-        shell: bash
-        run: |
+          if [[ "$DRY_RUN" == "true" ]]; then
+
+            echo "DRY RUN:"
+            echo "Cleanup API would be called."
+
+          else
+
+            curl \
+              --fail-with-body \
+              --retry 3 \
+              -sS \
+              -X DELETE \
+              "$API_BASE_URL$CLEANUP_API"
+
+          fi
+
           rm -rf package downloaded
-          rm -f ./*.json ./*.zip
+          rm -f *.json *.zip
 
-      - name: Execution summary
+      # ------------------------------------------------
+      # SUMMARY
+      # ------------------------------------------------
+
+      - name: Pipeline summary
         if: always()
-        shell: bash
         run: |
-          {
-            echo "## Package execution"
-            echo "Environment: ${{ inputs.environment }}"
-            echo "Package: $PACKAGE_NAME"
-            echo "Dry run: $DRY_RUN"
-            echo "Run ID: $GITHUB_RUN_ID"
-          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "## Package Pipeline" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Parameter | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | ${{ inputs.environment }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Package | $PACKAGE_NAME |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Dry Run | $DRY_RUN |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| API | $API_BASE_URL |" >> "$GITHUB_STEP_SUMMARY"
